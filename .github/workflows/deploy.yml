@@ -64,6 +64,74 @@ jobs:
         run: npx quartz plugin install
         working-directory: quartz
 
+      # ============================================================
+      # 📦 스마트 증분 복사 (rsync + 체크섬 기반)
+      # ============================================================
+      - name: Smart incremental sync (content, styles & configs)
+        id: sync
+        run: |
+          echo "🚀 Starting smart incremental sync..."
+
+          # 1. content 동기화
+          if [ -d "../content" ]; then
+            echo "📁 Syncing content..."
+            rsync -av --delete --exclude='.git' --exclude='.DS_Store' ../content/ content/
+            echo "HAS_CONTENT=true" >> $GITHUB_OUTPUT
+          else
+            echo "⚠️ No content directory found"
+            echo "HAS_CONTENT=false" >> $GITHUB_OUTPUT
+          fi
+
+          # 2. styles 동기화
+          if [ -d "../00_System/quartz-config/styles" ]; then
+            echo "🎨 Syncing styles..."
+            rsync -av --delete --exclude='.git' --exclude='.DS_Store' ../00_System/quartz-config/styles/ styles/
+            echo "HAS_STYLES=true" >> $GITHUB_OUTPUT
+          else
+            echo "HAS_STYLES=false" >> $GITHUB_OUTPUT
+          fi
+
+          # 🆕 3. 설정 파일 동기화 (루트 디렉토리에 있는 경우)
+          if [ -f "../00_System/quartz-config/quartz.config.ts" ]; then
+            echo "⚙️ Copying quartz.config.ts..."
+            cp ../00_System/quartz-config/quartz.config.ts ./
+            echo "HAS_CONFIG=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ No custom quartz.config.ts found, using submodule default"
+            echo "HAS_CONFIG=false" >> $GITHUB_OUTPUT
+          fi
+
+          if [ -f "../00_System/quartz-config/quartz.layout.ts" ]; then
+            echo "📐 Copying quartz.layout.ts..."
+            cp ../00_System/quartz-config/quartz.layout.ts ./
+            echo "HAS_LAYOUT=true" >> $GITHUB_OUTPUT
+          else
+            echo "ℹ️ No custom quartz.layout.ts found, using submodule default"
+            echo "HAS_LAYOUT=false" >> $GITHUB_OUTPUT
+          fi
+
+          # 4. 통계 정보 출력
+          echo "📊 Sync statistics:"
+          echo "  - Content files: $(find content -type f 2>/dev/null | wc -l)"
+          echo "  - Styles files:  $(find styles -type f 2>/dev/null | wc -l)"
+          if [ -f "quartz.config.ts" ]; then echo "  - ✅ Custom config exists"; fi
+          if [ -f "quartz.layout.ts" ]; then echo "  - ✅ Custom layout exists"; fi
+
+          # 5. 변경 감지용 해시 생성 (캐시 키용)
+          CONTENT_HASH=$(find ../content -type f -exec md5sum {} \; 2>/dev/null | sort | md5sum | cut -d' ' -f1 || echo "none")
+          STYLES_HASH=$(find ../00_System/quartz-config/styles -type f -exec md5sum {} \; 2>/dev/null | sort | md5sum | cut -d' ' -f1 || echo "none")
+          CONFIG_HASH=$(md5sum ../00_System/quartz-config/quartz.config.ts 2>/dev/null | cut -d' ' -f1 || echo "none")
+          LAYOUT_HASH=$(md5sum ../00_System/quartz-config/quartz.layout.ts 2>/dev/null | cut -d' ' -f1 || echo "none")
+          
+          echo "CONTENT_HASH=$CONTENT_HASH" >> $GITHUB_OUTPUT
+          echo "STYLES_HASH=$STYLES_HASH" >> $GITHUB_OUTPUT
+          echo "CONFIG_HASH=$CONFIG_HASH" >> $GITHUB_OUTPUT
+          echo "LAYOUT_HASH=$LAYOUT_HASH" >> $GITHUB_OUTPUT
+          echo "TOTAL_HASH=${CONTENT_HASH}-${STYLES_HASH}-${CONFIG_HASH}-${LAYOUT_HASH}" >> $GITHUB_OUTPUT
+
+          echo "✅ Incremental sync completed"
+        working-directory: quartz
+
       - name: Cache Quartz build artifacts
         uses: actions/cache@v4
         id: build-cache
@@ -71,13 +139,14 @@ jobs:
           path: |
             quartz/public
             quartz/.quartz/.cache
-          key: ${{ runner.os }}-quartz-build-${{ github.sha }}
+          key: ${{ runner.os }}-quartz-build-${{ steps.sync.outputs.TOTAL_HASH }}
           restore-keys: |
             ${{ runner.os }}-quartz-build-
 
       - name: Build Quartz site (if cache miss)
         if: steps.build-cache.outputs.cache-hit != 'true'
         run: |
+          echo "🔨 Building Quartz site..."
           npx quartz build
           
           # Create robots.txt for GitHub Pages
@@ -89,6 +158,8 @@ jobs:
           
           # Create .nojekyll to serve _-prefixed paths
           touch public/.nojekyll
+
+          echo "✅ Build completed"
         working-directory: quartz
 
       - name: Format sitemap.xml
